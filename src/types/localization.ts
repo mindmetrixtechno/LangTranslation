@@ -28,6 +28,43 @@ export interface CustomLessonSource {
   createdAt: string;
 }
 
+export interface VisualWireNode {
+  id: string;
+  label: string;
+  kind: 'real-world' | 'wire-bridge' | 'hardware';
+  subLabel: string;
+  roleDescription: string;
+}
+
+export interface VisualWireEdge {
+  id: string;
+  from: string;
+  to: string;
+  wireColor: 'sky' | 'emerald' | 'amber';
+  signalLabel: string;
+  explanation: string;
+}
+
+export interface VisualWireDiagram {
+  title: string;
+  analogySummary: string;
+  nodes: VisualWireNode[];
+  wires: VisualWireEdge[];
+  spokenWalkthrough: string;
+  audioUrl: string | null;
+}
+
+export interface DoubtEntry {
+  id: string;
+  question: string;
+  answer: string;
+  workbookReference: string;
+  spokenAnswer: string;
+  audioUrl: string | null;
+  visualDiagram: VisualWireDiagram | null;
+  createdAt: string;
+}
+
 export interface LocalizationFetchResult {
   found: boolean;
   cached: boolean;

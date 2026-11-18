@@ -20,6 +20,7 @@ import type {
 } from './types/localization';
 import { AudioPlayerBar, ComponentStage } from './components/ComponentStage';
 import { CustomMaterialPanel } from './components/CustomMaterialPanel';
+import { DoubtTutorSection } from './components/DoubtTutorSection';
 import { SavedLibraryDrawer } from './components/SavedLibraryDrawer';
 import { TechnicalGuide } from './components/TechnicalGuide';
 
@@ -853,6 +854,18 @@ export default function App() {
                     <p>{activeCustomItem ? activeCustomItem.mechanism : activeComponent.mechanism}</p>
                   </div>
                 )}
+
+                <DoubtTutorSection
+                  componentId={selectedComponentId}
+                  langCode={selectedLang}
+                  onStopMainAudio={() => {
+                    if (audioRef.current && isPlaying) {
+                      audioRef.current.pause();
+                      setIsPlaying(false);
+                    }
+                  }}
+                  onError={(msg) => setErrorMessage(msg || null)}
+                />
               </article>
             ) : selectedComponentId === 'custom-new' ? (
               <div className="py-8 text-center space-y-2">

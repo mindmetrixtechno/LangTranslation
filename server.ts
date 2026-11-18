@@ -46,11 +46,49 @@ interface LessonSpec {
   keyTakeaway: string;
 }
 
+interface VisualWireNode {
+  id: string;
+  label: string;
+  kind: 'real-world' | 'wire-bridge' | 'hardware';
+  subLabel: string;
+  roleDescription: string;
+}
+
+interface VisualWireEdge {
+  id: string;
+  from: string;
+  to: string;
+  wireColor: 'sky' | 'emerald' | 'amber';
+  signalLabel: string;
+  explanation: string;
+}
+
+interface VisualWireDiagram {
+  title: string;
+  analogySummary: string;
+  nodes: VisualWireNode[];
+  wires: VisualWireEdge[];
+  spokenWalkthrough: string;
+  audioUrl: string | null;
+}
+
+interface DoubtEntry {
+  id: string;
+  question: string;
+  answer: string;
+  workbookReference: string;
+  spokenAnswer: string;
+  audioUrl: string | null;
+  visualDiagram: VisualWireDiagram | null;
+  createdAt: string;
+}
+
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const AUDIO_DIR = path.join(DATA_DIR, 'audio');
 const STORE_PATH = path.join(DATA_DIR, 'localizations.json');
 const CUSTOM_STORE_PATH = path.join(DATA_DIR, 'custom_items.json');
+const DOUBTS_STORE_PATH = path.join(DATA_DIR, 'doubts.json');
 
 const ALLOWED_UPLOAD_MIMES = new Set([
   'application/pdf',
@@ -108,6 +146,24 @@ function writeCustomStore(store: Record<string, CustomLessonSource>): void {
   const tempPath = `${CUSTOM_STORE_PATH}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), 'utf8');
   fs.renameSync(tempPath, CUSTOM_STORE_PATH);
+}
+
+function readDoubtsStore(): Record<string, DoubtEntry[]> {
+  if (!fs.existsSync(DOUBTS_STORE_PATH)) {
+    return {};
+  }
+  try {
+    const raw = fs.readFileSync(DOUBTS_STORE_PATH, 'utf8');
+    return JSON.parse(raw) as Record<string, DoubtEntry[]>;
+  } catch {
+    return {};
+  }
+}
+
+function writeDoubtsStore(store: Record<string, DoubtEntry[]>): void {
+  const tempPath = `${DOUBTS_STORE_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), 'utf8');
+  fs.renameSync(tempPath, DOUBTS_STORE_PATH);
 }
 
 function findLessonSpec(id: string): LessonSpec | null {
@@ -201,11 +257,33 @@ function getAiClient(): GoogleGenAI {
 function extractGeminiError(err: unknown): { status: number; message: string } {
   if (err && typeof err === 'object') {
     const anyErr = err as { status?: number; message?: string };
-    const status =
+    let status =
       typeof anyErr.status === 'number' && anyErr.status >= 400
         ? anyErr.status
         : 500;
-    const message = anyErr.message || 'Gemini API request failed.';
+    let message = anyErr.message || 'Gemini API request failed.';
+
+    // SDK sometimes embeds raw JSON error payloads inside err.message
+    const trimmed = message.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as {
+          error?: { code?: number; message?: string; status?: string };
+          message?: string;
+        };
+        if (parsed.error?.message) {
+          message = parsed.error.message;
+          if (typeof parsed.error.code === 'number' && parsed.error.code >= 400) {
+            status = parsed.error.code;
+          }
+        } else if (parsed.message) {
+          message = parsed.message;
+        }
+      } catch {
+        // Keep original message if not valid JSON
+      }
+    }
+
     return { status, message };
   }
   return { status: 500, message: String(err) };
@@ -713,9 +791,602 @@ async function startServer(): Promise<void> {
     }
   });
 
+  app.get('/api/components/:id/doubts', (req, res) => {
+    const componentId = req.params.id;
+    const langCode = String(req.query.lang || 'en').toLowerCase();
+    const doubtsStore = readDoubtsStore();
+    const items = doubtsStore[makeKey(componentId, langCode)] ?? [];
+    res.json({ items });
+  });
+
+  app.post('/api/doubt/transcribe', async (req, res) => {
+    const langCode = String(req.body?.langCode || 'en').toLowerCase();
+    const audioBase64 = String(req.body?.audioBase64 || '');
+    const rawMime = String(req.body?.mimeType || 'audio/wav');
+    const cleanMime = rawMime.split(';')[0].trim().toLowerCase() || 'audio/wav';
+
+    if (!audioBase64) {
+      res.status(400).json({ error: 'No recorded audio was received.' });
+      return;
+    }
+
+    const cleanBase64 = audioBase64.includes(',')
+      ? audioBase64.split(',')[1]
+      : audioBase64;
+    const lang = getLanguageByCode(langCode);
+
+    try {
+      const ai = getAiClient();
+      const audioPart = {
+        inlineData: {
+          mimeType: cleanMime,
+          data: cleanBase64,
+        },
+      };
+
+      let transcript = '';
+      let transcribeFailure = '';
+      let transcribeStatus = 422;
+
+      // Tier 1: Dedicated static audio transcription model
+      try {
+        const transcribeRes = await ai.models.generateContent({
+          model: 'gemini-3.5-transcribe',
+          contents: {
+            parts: [
+              audioPart,
+              {
+                text: `Transcribe this audio in ${lang.name} (${lang.nativeName}) or English.`,
+              },
+            ],
+          },
+        });
+        transcript = (transcribeRes.text ?? '').trim();
+      } catch (transcribeErr) {
+        const extracted = extractGeminiError(transcribeErr);
+        transcribeFailure = extracted.message;
+        transcribeStatus = extracted.status;
+        console.warn('gemini-3.5-transcribe failed:', extracted);
+      }
+
+      // Tier 2: Multimodal flash-lite fallback (handles audio inlineData when transcribe model is busy)
+      if (!transcript) {
+        try {
+          const fallbackRes = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: {
+              parts: [
+                audioPart,
+                {
+                  text: `Listen to the attached audio recording and transcribe the exact spoken words. The speaker may be speaking ${lang.name} (${lang.nativeName}) or English. If no speech is audible, set hasSpeech to false and transcript to "".`,
+                },
+              ],
+            },
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  hasSpeech: { type: Type.BOOLEAN },
+                  transcript: { type: Type.STRING },
+                },
+                required: ['hasSpeech', 'transcript'],
+              },
+            },
+          });
+          const parsed = JSON.parse((fallbackRes.text ?? '{}').trim()) as {
+            hasSpeech?: boolean;
+            transcript?: string;
+          };
+          if (parsed.hasSpeech && parsed.transcript?.trim()) {
+            transcript = parsed.transcript.trim();
+          }
+        } catch (fallbackErr) {
+          const extracted = extractGeminiError(fallbackErr);
+          console.warn('gemini-3.1-flash-lite audio fallback failed:', extracted);
+          if (!transcribeFailure) {
+            transcribeFailure = extracted.message;
+            transcribeStatus = extracted.status;
+          }
+        }
+      }
+
+      // Tier 3: Live transcription fallback over 16kHz PCM if WAV payload is available
+      if (!transcript && cleanMime === 'audio/wav') {
+        try {
+          const wavBuf = Buffer.from(cleanBase64, 'base64');
+          const sampleRate = wavBuf.length >= 28 ? wavBuf.readUInt32LE(24) : 16000;
+          if (wavBuf.length > 44 && sampleRate === 16000) {
+            const { Modality } = await import('@google/genai');
+            const pcmBuf = wavBuf.subarray(44);
+            transcript = await new Promise<string>((resolve) => {
+              let collected = '';
+              let interim = '';
+              let settled = false;
+              let sessionRef: { close: () => void; sendRealtimeInput: (p: unknown) => void } | null = null;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                try {
+                  sessionRef?.close();
+                } catch {
+                  // Ignore close error
+                }
+                resolve((collected || interim).trim());
+              };
+              const timeout = setTimeout(finish, 6000);
+
+              ai.live
+                .connect({
+                  model: 'gemini-3.5-transcribe-live',
+                  config: {
+                    responseModalities: [Modality.TEXT],
+                    inputAudioTranscription: {
+                      languageCodes: [],
+                    },
+                  },
+                  callbacks: {
+                    onmessage: (message) => {
+                      const content = message.serverContent;
+                      if (content?.inputTranscription?.text) {
+                        collected += content.inputTranscription.text;
+                      }
+                      if (content?.interimInputTranscription?.text) {
+                        interim = content.interimInputTranscription.text;
+                      }
+                      if (content?.turnComplete && (collected || interim)) {
+                        clearTimeout(timeout);
+                        finish();
+                      }
+                    },
+                    onerror: () => {
+                      clearTimeout(timeout);
+                      finish();
+                    },
+                    onclose: () => {
+                      clearTimeout(timeout);
+                      finish();
+                    },
+                  },
+                })
+                .then((session) => {
+                  sessionRef = session as unknown as {
+                    close: () => void;
+                    sendRealtimeInput: (p: unknown) => void;
+                  };
+                  const chunkBytes = 3200; // 100ms at 16kHz 16-bit mono
+                  for (let offset = 0; offset < pcmBuf.length; offset += chunkBytes) {
+                    const slice = pcmBuf.subarray(offset, offset + chunkBytes);
+                    session.sendRealtimeInput({
+                      audio: {
+                        data: slice.toString('base64'),
+                        mimeType: 'audio/pcm;rate=16000',
+                      },
+                    });
+                  }
+                  // Trailing 800ms silence to trigger VAD end-of-turn
+                  const silence = Buffer.alloc(16000 * 2 * 0.8);
+                  session.sendRealtimeInput({
+                    audio: {
+                      data: silence.toString('base64'),
+                      mimeType: 'audio/pcm;rate=16000',
+                    },
+                  });
+                })
+                .catch(() => {
+                  clearTimeout(timeout);
+                  finish();
+                });
+            });
+          }
+        } catch (liveErr) {
+          console.warn('gemini-3.5-transcribe-live fallback failed:', liveErr);
+        }
+      }
+
+      if (!transcript) {
+        const finalStatus = transcribeStatus >= 500 ? 503 : 422;
+        res.status(finalStatus).json({
+          error:
+            transcribeFailure ||
+            'Could not detect speech in the recording. Please try speaking closer to the microphone or type your doubt.',
+        });
+        return;
+      }
+      res.json({ transcript });
+    } catch (err) {
+      const { status, message } = extractGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/doubt/ask', async (req, res) => {
+    const componentId = String(req.body?.componentId || '');
+    const langCode = String(req.body?.langCode || 'en').toLowerCase();
+    const question = String(req.body?.question || '').trim();
+
+    const lesson = findLessonSpec(componentId);
+    if (!lesson) {
+      res.status(404).json({ error: `Unknown lesson "${componentId}".` });
+      return;
+    }
+    if (!question) {
+      res.status(400).json({ error: 'Please ask or type your doubt first.' });
+      return;
+    }
+
+    const lang = getLanguageByCode(langCode);
+    const locStore = readStore();
+    const localized = locStore[makeKey(componentId, langCode)];
+
+    const workbookContext = [
+      `Active Workbook Lesson: ${lesson.title}`,
+      `Summary: ${lesson.summary}`,
+      `How It Works: ${lesson.mechanism}`,
+      `Real-World Role: ${lesson.realWorld}`,
+      `Key Takeaway: ${lesson.keyTakeaway}`,
+      localized
+        ? `\nStudent's Screen Translation (${lang.name}):\nTitle: ${localized.title}\nSummary: ${localized.summary}\nMechanism: ${localized.mechanism}\nReal-World: ${localized.realWorld}\nTakeaway: ${localized.keyTakeaway}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      const ai = getAiClient();
+      const prompt = [
+        `A student is studying the workbook lesson below on screen in ${lang.name} (${lang.nativeName}) and has a doubt:`,
+        `Student's Doubt: "${question}"`,
+        '',
+        `Workbook Content:`,
+        workbookContext,
+        '',
+        `Instructions:`,
+        `1. Answer ONLY in ${lang.name} (${lang.nativeName}) (keeping core technical acronyms like ALU, CPU, DRAM, MOSFET, NAND, PWM, IRQ clear if helpful).`,
+        `2. Ground your answer in the workbook content above, but explain it in a much clearer, warmer, step-by-step way with an intuitive everyday example so the student resolves their doubt immediately.`,
+        `3. Fill "workbookReference" with a short note in ${lang.name} telling the student which part of the workbook lesson explains this.`,
+        `4. Fill "spokenAnswer" with a smooth spoken version of the answer in ${lang.name} ready for text-to-speech.`,
+      ].join('\n');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          systemInstruction: `You are SkillOS's patient, encouraging workbook tutor. Always answer in ${lang.name} (${lang.nativeName}) using clear, jargon-free explanations grounded in the active workbook lesson.`,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              answer: {
+                type: Type.STRING,
+                description: `Clear, intuitive answer to the student's doubt in ${lang.name}.`,
+              },
+              workbookReference: {
+                type: Type.STRING,
+                description: `Short citation in ${lang.name} pointing to the relevant section of the workbook lesson.`,
+              },
+              spokenAnswer: {
+                type: Type.STRING,
+                description: `Natural spoken script in ${lang.name} for text-to-speech.`,
+              },
+            },
+            required: ['answer', 'workbookReference', 'spokenAnswer'],
+          },
+        },
+      });
+
+      const rawJson = (response.text ?? '').trim();
+      if (!rawJson) {
+        throw new Error('Gemini returned an empty tutor answer.');
+      }
+
+      const parsed = JSON.parse(rawJson) as {
+        answer: string;
+        workbookReference: string;
+        spokenAnswer: string;
+      };
+
+      const entry: DoubtEntry = {
+        id: crypto.randomBytes(4).toString('hex'),
+        question,
+        answer: parsed.answer,
+        workbookReference: parsed.workbookReference,
+        spokenAnswer: parsed.spokenAnswer || parsed.answer,
+        audioUrl: null,
+        visualDiagram: null,
+        createdAt: new Date().toISOString(),
+      };
+
+      const doubtsStore = readDoubtsStore();
+      const key = makeKey(componentId, langCode);
+      const existingList = doubtsStore[key] ?? [];
+      doubtsStore[key] = [entry, ...existingList].slice(0, 12);
+      writeDoubtsStore(doubtsStore);
+
+      res.json({ entry });
+    } catch (err) {
+      const { status, message } = extractGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/doubt/visual-diagram', async (req, res) => {
+    const componentId = String(req.body?.componentId || '');
+    const langCode = String(req.body?.langCode || 'en').toLowerCase();
+    const doubtId = String(req.body?.doubtId || '');
+
+    const lesson = findLessonSpec(componentId);
+    if (!lesson) {
+      res.status(404).json({ error: `Unknown lesson "${componentId}".` });
+      return;
+    }
+
+    const doubtsStore = readDoubtsStore();
+    const key = makeKey(componentId, langCode);
+    const list = doubtsStore[key] ?? [];
+    const targetIdx = list.findIndex((d) => d.id === doubtId);
+    if (targetIdx === -1) {
+      res.status(404).json({ error: 'Doubt entry not found.' });
+      return;
+    }
+
+    const doubt = list[targetIdx];
+    if (doubt.visualDiagram) {
+      res.json({ entry: doubt, cached: true });
+      return;
+    }
+
+    const lang = getLanguageByCode(langCode);
+
+    try {
+      const ai = getAiClient();
+      const prompt = [
+        `The student STILL does not understand the concept and needs a graphical real-world wire-connection explanation in ${lang.name} (${lang.nativeName}).`,
+        `Lesson: ${lesson.title} — ${lesson.summary} ${lesson.mechanism}`,
+        `Student's Doubt: "${doubt.question}"`,
+        '',
+        `Design an interactive 3-node or 4-node wire-connection diagram that literally connects a familiar everyday real-world object (like a light switch, water tap/pipe, battery charger, or mail counter) with physical wires to the hardware concept so the student sees how it works step by step.`,
+        `All text fields MUST be in ${lang.name} (${lang.nativeName}).`,
+        `Rules for nodes & wires:`,
+        `- Return exactly 3 nodes with ids "n1", "n2", "n3":`,
+        `  - "n1" must have kind: "real-world" (the familiar everyday real-world object)`,
+        `  - "n2" must have kind: "wire-bridge" (how the signal/wire carries or controls energy/data)`,
+        `  - "n3" must have kind: "hardware" (the actual component action/outcome in the lesson)`,
+        `- Return exactly 2 wires connecting "n1" -> "n2" (wire id "w1", wireColor "sky") and "n2" -> "n3" (wire id "w2", wireColor "emerald").`,
+        `- Keep node labels concise (2-5 words) and roleDescription + wire explanations super clear and friendly in ${lang.name}.`,
+        `- Provide "spokenWalkthrough": a natural 2-3 sentence spoken walkthrough of this wire diagram in ${lang.name}.`,
+      ].join('\n');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          systemInstruction: `You are a visual engineering teacher creating intuitive real-world wire-connection diagrams in ${lang.name} (${lang.nativeName}).`,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              analogySummary: { type: Type.STRING },
+              spokenWalkthrough: { type: Type.STRING },
+              nodes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    label: { type: Type.STRING },
+                    kind: { type: Type.STRING },
+                    subLabel: { type: Type.STRING },
+                    roleDescription: { type: Type.STRING },
+                  },
+                  required: [
+                    'id',
+                    'label',
+                    'kind',
+                    'subLabel',
+                    'roleDescription',
+                  ],
+                },
+              },
+              wires: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    from: { type: Type.STRING },
+                    to: { type: Type.STRING },
+                    wireColor: { type: Type.STRING },
+                    signalLabel: { type: Type.STRING },
+                    explanation: { type: Type.STRING },
+                  },
+                  required: [
+                    'id',
+                    'from',
+                    'to',
+                    'wireColor',
+                    'signalLabel',
+                    'explanation',
+                  ],
+                },
+              },
+            },
+            required: [
+              'title',
+              'analogySummary',
+              'spokenWalkthrough',
+              'nodes',
+              'wires',
+            ],
+          },
+        },
+      });
+
+      const rawJson = (response.text ?? '').trim();
+      if (!rawJson) {
+        throw new Error('Gemini returned an empty visual diagram.');
+      }
+
+      const parsed = JSON.parse(rawJson) as {
+        title: string;
+        analogySummary: string;
+        spokenWalkthrough: string;
+        nodes: VisualWireNode[];
+        wires: VisualWireEdge[];
+      };
+
+      const normalizedNodes: VisualWireNode[] = (parsed.nodes || [])
+        .slice(0, 3)
+        .map((n, idx) => ({
+          id: n.id || `n${idx + 1}`,
+          label: n.label,
+          kind:
+            idx === 0
+              ? 'real-world'
+              : idx === 1
+                ? 'wire-bridge'
+                : 'hardware',
+          subLabel: n.subLabel,
+          roleDescription: n.roleDescription,
+        }));
+
+      const normalizedWires: VisualWireEdge[] = (parsed.wires || [])
+        .slice(0, 2)
+        .map((w, idx) => ({
+          id: w.id || `w${idx + 1}`,
+          from: normalizedNodes[idx]?.id || `n${idx + 1}`,
+          to: normalizedNodes[idx + 1]?.id || `n${idx + 2}`,
+          wireColor: idx === 0 ? 'sky' : 'emerald',
+          signalLabel: w.signalLabel,
+          explanation: w.explanation,
+        }));
+
+      const diagram: VisualWireDiagram = {
+        title: parsed.title,
+        analogySummary: parsed.analogySummary,
+        nodes: normalizedNodes,
+        wires: normalizedWires,
+        spokenWalkthrough: parsed.spokenWalkthrough || parsed.analogySummary,
+        audioUrl: null,
+      };
+
+      const updatedDoubt: DoubtEntry = {
+        ...doubt,
+        visualDiagram: diagram,
+      };
+      list[targetIdx] = updatedDoubt;
+      doubtsStore[key] = list;
+      writeDoubtsStore(doubtsStore);
+
+      res.json({ entry: updatedDoubt, cached: false });
+    } catch (err) {
+      const { status, message } = extractGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/doubt/tts', async (req, res) => {
+    const componentId = String(req.body?.componentId || '');
+    const langCode = String(req.body?.langCode || 'en').toLowerCase();
+    const doubtId = String(req.body?.doubtId || '');
+    const target = req.body?.target === 'diagram' ? 'diagram' : 'answer';
+
+    const doubtsStore = readDoubtsStore();
+    const key = makeKey(componentId, langCode);
+    const list = doubtsStore[key] ?? [];
+    const targetIdx = list.findIndex((d) => d.id === doubtId);
+    if (targetIdx === -1) {
+      res.status(404).json({ error: 'Doubt entry not found.' });
+      return;
+    }
+
+    const doubt = list[targetIdx];
+    const existingUrl =
+      target === 'diagram' ? doubt.visualDiagram?.audioUrl : doubt.audioUrl;
+    const audioFilename = `doubt-${doubtId}-${target}_${langCode}.wav`;
+    const audioPath = path.join(AUDIO_DIR, audioFilename);
+
+    if (existingUrl && fs.existsSync(audioPath)) {
+      res.json({ audioUrl: existingUrl, entry: doubt, cached: true });
+      return;
+    }
+
+    const textToSpeak =
+      target === 'diagram'
+        ? doubt.visualDiagram?.spokenWalkthrough
+        : doubt.spokenAnswer;
+
+    if (!textToSpeak) {
+      res.status(400).json({ error: 'No text available to speak.' });
+      return;
+    }
+
+    const lang = getLanguageByCode(langCode);
+
+    try {
+      const ai = getAiClient();
+      const ttsResponse = await ai.models.generateContent({
+        model: 'gemini-3.8-flash-lite-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: textToSpeak,
+                speechMetadata: {
+                  style: `Patient, encouraging STEM tutor speaking ${lang.name}`,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: lang.voiceName || 'Kore' },
+            },
+          },
+        },
+      });
+
+      const base64Audio =
+        ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+      if (!base64Audio) {
+        throw new Error('Gemini TTS did not return audio data.');
+      }
+
+      const wavBuffer = Buffer.from(base64Audio, 'base64');
+      fs.writeFileSync(audioPath, wavBuffer);
+
+      const audioUrl = `/api/audio/${audioFilename}?v=${Date.now()}`;
+      const updatedDoubt: DoubtEntry =
+        target === 'diagram' && doubt.visualDiagram
+          ? {
+              ...doubt,
+              visualDiagram: { ...doubt.visualDiagram, audioUrl },
+            }
+          : {
+              ...doubt,
+              audioUrl,
+            };
+
+      list[targetIdx] = updatedDoubt;
+      doubtsStore[key] = list;
+      writeDoubtsStore(doubtsStore);
+
+      res.json({ audioUrl, entry: updatedDoubt, cached: false });
+    } catch (err) {
+      const { status, message } = extractGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
   app.get('/api/audio/:filename', (req, res) => {
     const filename = path.basename(req.params.filename);
-    if (!/^[a-z0-9-]+_[a-z]{2,5}\.wav$/i.test(filename)) {
+    if (!/^[a-z0-9-]+_[a-z0-9-]+\.wav$/i.test(filename)) {
       res.status(400).json({ error: 'Invalid audio filename.' });
       return;
     }
