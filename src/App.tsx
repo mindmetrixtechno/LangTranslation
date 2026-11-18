@@ -519,7 +519,7 @@ export default function App() {
           <div
             role="tablist"
             aria-label="Hardware components and custom upload"
-            className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 p-1.5 bg-slate-200/70 rounded-xl"
+            className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 p-1.5 bg-slate-200/70 rounded-xl"
           >
             {SYSTEM_COMPONENTS.map((comp) => {
               const active = comp.id === selectedComponentId;
@@ -571,13 +571,17 @@ export default function App() {
           </div>
         </section>
 
-        {/* Two-Zone Sandbox Split: Stage (7 cols) + Multilingual Concept & Audio Deck (5 cols) */}
+        {/* Two-Zone Sandbox Split: Stage (7 cols, or 12 cols for UNO R3 3-Pane Studio) + Concept & Audio Deck */}
         <section
           id="lab-stage"
           className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start"
         >
           {/* Left Stage */}
-          <div className="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 space-y-6">
+          <div
+            className={`${
+              selectedComponentId === 'uno-r3' ? 'lg:col-span-12' : 'lg:col-span-7'
+            } bg-white border border-slate-200 rounded-2xl p-6 space-y-6`}
+          >
             {isCustomMode ? (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
@@ -659,10 +663,12 @@ export default function App() {
             )}
           </div>
 
-          {/* Right Multilingual Concept & Audio Deck */}
+          {/* Multilingual Concept & Audio Deck */}
           <div
             id="concept-deck"
-            className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 space-y-5"
+            className={`${
+              selectedComponentId === 'uno-r3' ? 'lg:col-span-12' : 'lg:col-span-5'
+            } bg-white border border-slate-200 rounded-2xl p-6 space-y-5`}
           >
             {/* Language Controls */}
             <div className="space-y-3 border-b border-slate-100 pb-5">

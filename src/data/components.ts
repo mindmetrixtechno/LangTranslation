@@ -132,6 +132,26 @@ export const SYSTEM_COMPONENTS: SystemComponentSpec[] = [
       { label: 'Dispatch', value: 'Vectored IVT Lookup' },
     ],
   },
+  {
+    id: 'uno-r3',
+    title: 'Arduino UNO R3 Microcontroller',
+    shortTitle: 'UNO R3 Blocks',
+    category: 'Microcontroller',
+    stageLabel: 'Block Studio & Pin Simulator',
+    summary:
+      'The Arduino UNO R3 is an ATmega328P microcontroller board that runs a one-time setup() routine followed by a continuous loop() to read sensors, decide logic, and drive LEDs, motors, or serial output.',
+    mechanism:
+      'Visual programming blocks map directly to Arduino C++ statements. setup() configures digital pins as OUTPUT or INPUT and starts serial communication, while loop() switches 5V digital signals (HIGH/LOW), outputs 8-bit PWM waveforms (0–255) on tilde (~) pins, and reads 10-bit analog voltages (0–1023) on pins A0–A5.',
+    realWorld:
+      'Students and engineers use UNO R3 boards for robotics controllers, automated plant watering, smart lighting dimmers, temperature monitors, and classroom hardware prototyping.',
+    keyTakeaway:
+      'Every Arduino block program compiles down to C++ setup() and loop() machine instructions that control real 5V pins and timers inside the ATmega328P chip.',
+    specs: [
+      { label: 'MCU Core', value: 'ATmega328P (16 MHz)' },
+      { label: 'I/O Pins', value: '14 Digital (6 PWM) · 6 Analog' },
+      { label: 'Flash Load', value: '.ino Sketch / STK500v1 USB' },
+    ],
+  },
 ];
 
 export function getComponentById(id: string): SystemComponentSpec {

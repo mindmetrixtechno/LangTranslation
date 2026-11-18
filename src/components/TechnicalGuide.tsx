@@ -196,8 +196,8 @@ export function TechnicalGuide() {
   const stackRows = [
     {
       layer: 'Frontend UI & Simulators',
-      tech: 'React 19 · TypeScript · Tailwind CSS v4 · Interactive SVG',
-      role: 'Deterministic hardware simulators, language switcher, imperative audio player, Doubt Tutor drawer, and clickable 3-node wire schematics.',
+      tech: 'React 19 · TypeScript · Tailwind CSS v4 · Interactive SVG · Web Serial',
+      role: '7 deterministic labs (including UNO R3 Block Studio & .ino codegen), language switcher, imperative audio player, Doubt Tutor, and 3-node wire schematics.',
     },
     {
       layer: 'Browser Voice Capture',
@@ -233,10 +233,10 @@ export function TechnicalGuide() {
 
   const aiBoundaryRows = [
     {
-      feature: '6 Hardware Simulators (ALU, DRAM, MOSFET, NAND, Buck, IRQ)',
+      feature: '7 Hardware Labs & UNO R3 Block-to-.ino Studio',
       withoutAi: 'Yes (100% Local)',
-      engine: 'React state, math formulas & SVG',
-      detail: 'Interactive gates, waveforms, voltages, and registers compute directly in the browser with zero AI involvement.',
+      engine: 'React state, math formulas, SVG & Web Serial',
+      detail: 'Gates, waveforms, registers, UNO R3 pin simulations, Arduino C++ (.ino) generation, and USB Serial/Firmata run deterministically in the browser with zero AI.',
     },
     {
       feature: 'Mic Capture, Live Level Meter & 16kHz WAV Conversion',

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Play, Pause, RotateCcw, Volume2 } from 'lucide-react';
 import type { LocalizedContent } from '../types/localization';
+import { UnoR3BlockStage } from './UnoR3BlockStage';
 
 interface ComponentStageProps {
   componentId: string;
@@ -735,6 +736,8 @@ export function ComponentStage({ componentId }: ComponentStageProps) {
       return <BuckConverterStage />;
     case 'irq-controller':
       return <IrqControllerStage />;
+    case 'uno-r3':
+      return <UnoR3BlockStage />;
     default:
       return <AluStage />;
   }
