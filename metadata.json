@@ -1,0 +1,6 @@
+{
+  "name": "SkillOS",
+  "description": "Interactive hardware and computer systems learning studio with Gemini translation and persistent voice narration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
